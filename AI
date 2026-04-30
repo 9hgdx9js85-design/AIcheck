@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
+  <title>OCR + 文本理解</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f3f4f6;
+      margin: 0;
+      padding: 1rem;
+    }
+    .container {
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    h2 { text-align: center; color: #1e40af; }
+    .card {
+      background: white;
+      border-radius: 1rem;
+      padding: 1.2rem;
+      margin-bottom: 1rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+    }
+    label {
+      font-weight: 600;
+      display: block;
+      margin: 0.8rem 0 0.3rem;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 0.7rem;
+      border: 1px solid #cbd5e1;
+      border-radius: 0.7rem;
+      font-size: 1rem;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      width: 100%;
+      padding: 0.8rem;
+      border-radius: 0.7rem;
+      font-size: 1.1rem;
+      font-weight: bold;
+      margin-top: 0.5rem;
+      cursor: pointer;
+    }
+    button:disabled { background: #94a3b8; }
+    #image-preview { max-width: 100%; max-height: 220px; margin-top: 0.5rem; display: none; border-radius: 0.5rem; }
+    .log-box {
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 0.8rem;
+      border-radius: 0.7rem;
+      min-height: 100px;
+      max-height: 350px;
+      overflow-y: auto;
+      font-size: 0.9rem;
+      white-space: pre-wrap;
+    }
+    .key-hint { font-size: 0.8rem; color: #64748b; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>📷 拍照/选图提问</h2>
+
+    <!-- API Key 区 -->
+    <div class="card" id="key-area">
+      <label>🔑 SiliconFlow API Key</label>
+      <input type="password" id="api-key-input" placeholder="sk-xxxxxxxxxxxxxxxx">
+      <div class="key-hint">输入后自动存在本机，下次免输入</div>
+      <button onclick="saveKey()">保存密钥</button>
+    </div>
+
+    <!-- 使用区（初始隐藏） -->
+    <div id="main-area" style="display: none;">
+      <div class="card">
+        <label>❓ 你的问题</label>
+        <textarea id="userQuestion" rows="2" placeholder="例如：这张菜单里最贵的菜是什么？"></textarea>
+
+        <label>🖼️ 选择图片</label>
+        <input type="file" id="imageInput" accept="image/*" capture="environment">
+        <img id="image-preview" alt="预览">
+      </div>
+
+      <button id="askBtn" onclick="startWorkflow()">🤖 开始处理</button>
+
+      <div class="card">
+        <div class="log-box" id="log">✅ 就绪…</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---------- 密钥管理 ----------
+    const storageKey = 'sf_api_key';
+    let API_KEY = localStorage.getItem(storageKey) || '';
+
+    const keyArea = document.getElementById('key-area');
+    const mainArea = document.getElementById('main-area');
+    const keyInput = document.getElementById('api-key-input');
+
+    // 若已有密钥，直接进入主界面
+    if (API_KEY) {
+      keyArea.style.display = 'none';
+      mainArea.style.display = 'block';
+    }
+
+    function saveKey() {
+      const val = keyInput.value.trim();
+      if (!val.startsWith('sk-')) {
+        alert('请输入有效的 SiliconFlow API Key（以 sk- 开头）');
+        return;
+      }
+      localStorage.setItem(storageKey, val);
+      API_KEY = val;
+      keyArea.style.display = 'none';
+      mainArea.style.display = 'block';
+    }
+
+    // ---------- 模型配置 ----------
+    const TEXT_MODEL = 'Qwen/Qwen2-7B-Instruct';     // 纯文本模型
+    const OCR_MODEL  = 'Qwen/Qwen2-VL-7B-Instruct';  // 多模态OCR模型
+    const API_URL = 'https://api.siliconflow.cn/v1/chat/completions';
+
+    let imageBase64 = null;
+
+    // 图片上传预览
+    document.getElementById('imageInput').addEventListener('change', function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        imageBase64 = reader.result.split(',')[1];
+        const preview = document.getElementById('image-preview');
+        preview.src = reader.result;
+        preview.style.display = 'block';
+        log('🖼️ 图片已加载');
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function log(msg) {
+      const logArea = document.getElementById('log');
+      logArea.textContent += '\n' + msg;
+      logArea.scrollTop = logArea.scrollHeight;
+    }
+
+    async function callModel(model, messages) {
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${API_KEY}`
+        },
+        body: JSON.stringify({ model, messages, stream: false })
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`API ${res.status}: ${errText}`);
+      }
+      const data = await res.json();
+      return data.choices[0].message.content;
+    }
+
+    async function startWorkflow() {
+      const userQuestion = document.getElementById('userQuestion').value.trim();
+      if (!userQuestion) return alert('请输入问题');
+     
