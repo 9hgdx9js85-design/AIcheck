@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI随身助理 · 硅基流动·千问</title>
+  AI随身助理 · 硅基流动·千问
   <style>
     :root {
       --bg: #f5f5f7;
@@ -147,7 +147,7 @@
     }
     .msg-row .mini-btn:hover { background: #e5e7ec; color: var(--text-primary); }
     .msg-image-thumb {
-      max-width: 180px; max-height: 180px; border-radius: var(--radius-md);
+      max-width: 280px; max-height: 280px; border-radius: var(--radius-md);
       cursor: pointer; border: 2px solid transparent;
       transition: all var(--transition-fast); object-fit: cover;
       display: block; margin-bottom: 6px;
@@ -391,11 +391,21 @@
       font-family: var(--font-sans); background: #fff;
     }
     .confirm-dialog .confirm-btns button.confirm-yes { background: #e84d3c; color: #fff; border: none; }
+    .connection-status {
+      font-size: 11px; color: var(--text-tertiary);
+      display: flex; align-items: center; gap: 4px;
+    }
+    .connection-status .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+    }
+    .connection-status.connected .dot { background: #22b07d; }
+    .connection-status.disconnected .dot { background: #e84d3c; }
     @media (max-width: 640px) {
       .settings-panel { width: 100%; max-width: 100%; border-radius: var(--radius-xl) var(--radius-xl) 0 0; top: auto; bottom: 0; height: 78vh; transform: translateY(100%); }
       .settings-panel.active { transform: translateY(0); }
       .msg-row { max-width: 92%; }
       .topbar .badge-name { display: none; }
+      .topbar .mode-switch { transform: scale(0.9); }
     }
   </style>
 </head>
@@ -409,10 +419,8 @@
     </div>
     <button class="icon-btn" id="btnSettings" title="高级设置">⚙️</button>
   </div>
-
   <div class="chat-container" id="chatContainer"></div>
   <button class="scroll-bottom-btn" id="scrollBottomBtn" title="滚动到底部">↓</button>
-
   <div class="input-area">
     <div class="input-row">
       <label class="upload-btn" id="uploadBtn" title="上传图片">🖼️</label>
@@ -424,10 +432,13 @@
       <span class="opt-chip active" id="chipDeepThink">🧠 深度思考</span>
       <span class="opt-chip" id="chipSearch">🔍 智能搜索</span>
       <span style="flex:1;"></span>
+      <span class="connection-status" id="connectionStatus">
+        <span class="dot"></span>
+        <span id="connText">检测中...</span>
+      </span>
       <span style="font-size:10px;color:var(--text-tertiary);" id="tokenIndicator">Tokens: 0</span>
     </div>
   </div>
-
   <div class="settings-overlay" id="settingsOverlay"></div>
   <div class="settings-panel" id="settingsPanel">
     <div class="settings-panel-header">
@@ -437,11 +448,11 @@
     <div class="settings-tabs">
       <button class="settings-tab active" data-stab="tab-common">常用</button>
       <button class="settings-tab" data-stab="tab-expert">专家参数</button>
+      <button class="settings-tab" data-stab="tab-server">服务配置</button>
       <button class="settings-tab" data-stab="tab-data">数据管理</button>
     </div>
     <div class="settings-body" id="settingsBody"></div>
   </div>
-
   <div class="confirm-overlay" id="confirmOverlay">
     <div class="confirm-dialog">
       <p id="confirmText"></p>
@@ -451,20 +462,17 @@
       </div>
     </div>
   </div>
-
   <div class="global-toast" id="globalToast"></div>
-
   <script>
-    // ==================== 配置区域（唯一需要修改的地方） ====================
-    // Cloudflare Worker 代理地址（已填入你的 Worker 域名）
-    const PROXY_URL = 'https://cold-rain-b291.9hgdx9js85.workers.dev/';
+    // ==================== 配置区域 ====================
+    const DEFAULT_PROXY_URL = 'https://cold-rain-b291.9hgdx9js85.workers.dev/';
     const TEXT_MODEL = 'Qwen/Qwen3-8B';
-    const VISION_MODEL = 'Qwen/Qwen3.5-4B';
+    const VISION_MODEL = 'Qwen/Qwen2-VL-7B-Instruct';
     const CONTEXT_WINDOW = 128000;
     const MEMORY_THRESHOLD = 0.7;
     const KEEP_RECENT_MSGS = 8;
     // =====================================================================
-
+    
     // 全局变量
     const chatContainer = document.getElementById('chatContainer');
     const msgInput = document.getElementById('msgInput');
@@ -486,15 +494,30 @@
     const assistantNameBadge = document.getElementById('assistantNameBadge');
     const chipDeepThink = document.getElementById('chipDeepThink');
     const chipSearch = document.getElementById('chipSearch');
-
+    const connectionStatus = document.getElementById('connectionStatus');
+    const connText = document.getElementById('connText');
+    
     let messages = [], memorySummary = '', totalTokens = 0;
     let settings = {
-      assistantName: 'AI助理', moodMode: 'smart', systemPrompt: '',
-      temperature: 0.8, topP: 0.9, minP: 0, frequencyPenalty: 0,
-      enableThinking: true, thinkingBudget: 2048, soundEnabled: true,
+      proxyUrl: DEFAULT_PROXY_URL,
+      assistantName: 'AI助理', 
+      moodMode: 'smart', 
+      systemPrompt: '',
+      temperature: 0.8, 
+      topP: 0.9, 
+      minP: 0, 
+      frequencyPenalty: 0,
+      enableThinking: true, 
+      thinkingBudget: 2048, 
+      soundEnabled: true,
     };
     let currentMode = 'fast', pendingImageBase64 = null, isStreaming = false;
     let streamAbortController = null, currentStreamMsgId = null, confirmCallback = null;
+
+    // 获取当前代理地址
+    function getProxyUrl() {
+      return settings.proxyUrl || DEFAULT_PROXY_URL;
+    }
 
     // 存储相关
     function loadStorage() {
@@ -509,7 +532,10 @@
         if (st) settings = { ...settings, ...JSON.parse(st) };
         const md = localStorage.getItem('ai_assistant_mode');
         if (md) currentMode = md;
-      } catch (e) { messages = []; memorySummary = ''; totalTokens = 0; }
+      } catch (e) { 
+        console.warn('Load storage error', e);
+        messages = []; memorySummary = ''; totalTokens = 0; 
+      }
     }
     function saveStorage() {
       try {
@@ -518,7 +544,9 @@
         localStorage.setItem('ai_assistant_totalTokens', totalTokens.toString());
         localStorage.setItem('ai_assistant_settings', JSON.stringify(settings));
         localStorage.setItem('ai_assistant_mode', currentMode);
-      } catch (e) { showToast('⚠️ 存储空间不足'); }
+      } catch (e) { 
+        showToast('⚠️ 存储空间不足'); 
+      }
     }
     function applyUI() {
       assistantNameBadge.textContent = settings.assistantName || 'AI助理';
@@ -526,10 +554,29 @@
       document.querySelector('.mode-btn[data-mode="expert"]').classList.toggle('active', currentMode === 'expert');
       tokenIndicator.textContent = 'Tokens: ' + totalTokens.toLocaleString();
       chipDeepThink.classList.toggle('active', settings.enableThinking);
+      testConnection();
+    }
+
+    // 连接状态检测
+    async function testConnection() {
+      try {
+        const resp = await fetch(getProxyUrl(), { method: 'OPTIONS' });
+        if (resp.ok) {
+          connectionStatus.className = 'connection-status connected';
+          connText.textContent = '已连接';
+        } else {
+          connectionStatus.className = 'connection-status disconnected';
+          connText.textContent = '连接异常';
+        }
+      } catch(e) {
+        connectionStatus.className = 'connection-status disconnected';
+        connText.textContent = '无法连接';
+      }
     }
 
     loadStorage();
     applyUI();
+    renderAll();
 
     // 消息渲染
     function renderAll() {
@@ -577,6 +624,7 @@
       scrollToBottom(false);
     }
     function formatContent(text) {
+      if (!text) return '';
       let html = escapeHtml(text);
       html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
         return `<div class="code-block"><button class="copy-code-btn" onclick="copyCode(this)">📋 复制代码</button><pre>${escapeHtml(code.trim())}</pre></div>`;
@@ -585,12 +633,26 @@
       html = html.replace(/\n/g, '<br>');
       return html;
     }
-    function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function scrollToBottom(instant) { chatContainer.scrollTo({ top: chatContainer.scrollHeight, behavior: instant ? 'auto' : 'smooth' }); }
-
+    function escapeHtml(s) { 
+      if (!s) return '';
+      const d = document.createElement('div'); 
+      d.textContent = s; 
+      return d.innerHTML; 
+    }
+    function scrollToBottom(instant) { 
+      chatContainer.scrollTo({ top: chatContainer.scrollHeight, behavior: instant ? 'auto' : 'smooth' }); 
+    }
+    
     // 消息对象
     function createMsg(role, content, type='text', img=null, extra={}) {
-      return { id:'msg_'+Date.now()+Math.random().toString(36).substr(2,6), role, content, type, imageBase64: img, imageRecognized: extra.imageRecognized || false, timestamp: Date.now(), tokens: extra.tokens || 0 };
+      return { 
+        id:'msg_'+Date.now()+Math.random().toString(36).substr(2,6), 
+        role, content, type, 
+        imageBase64: img, 
+        imageRecognized: extra.imageRecognized || false, 
+        timestamp: Date.now(), 
+        tokens: extra.tokens || 0 
+      };
     }
     function addMsg(msg) {
       messages.push(msg);
@@ -620,274 +682,643 @@
           showMemoryToast();
           if (settings.soundEnabled) playChime();
         }
-      } catch(e) { console.warn('压缩失败', e); }
+      } catch(e) { 
+        console.warn('压缩失败', e); 
+      }
     }
     async function callTextSync(prompt) {
-      const resp = await fetch(PROXY_URL, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ model: TEXT_MODEL, messages:[{role:'user',content:prompt}], stream:false, max_tokens:600, temperature:0.5 }),
+      const resp = await fetch(getProxyUrl(), {
+        method:'POST', 
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ 
+          model: TEXT_MODEL, 
+          messages:[{role:'user',content:prompt}], 
+          stream:false, 
+          max_tokens:600, 
+          temperature:0.5 
+        }),
       });
-      if (!resp.ok) throw new Error('fail');
+      if (!resp.ok) {
+        let errMsg = `API错误: ${resp.status}`;
+        try {
+          const errData = await resp.json();
+          if (errData.error) errMsg = errData.error;
+        } catch(e) {}
+        throw new Error(errMsg);
+      }
       const data = await resp.json();
       return data?.choices?.[0]?.message?.content || '';
     }
     function showMemoryToast() {
-      const t = document.createElement('div'); t.className='system-toast'; t.textContent='✨ 已新增记忆';
+      const t = document.createElement('div'); 
+      t.className='system-toast'; 
+      t.textContent='✨ 已新增记忆';
       t.style.cssText='position:fixed;top:60px;left:50%;transform:translateX(-50%);z-index:35;pointer-events:none;';
       document.body.appendChild(t);
-      setTimeout(()=>{ t.style.opacity='0'; t.style.transition='opacity 0.6s'; setTimeout(()=>t.remove(),700); },2000);
+      setTimeout(()=>{ 
+        t.style.opacity='0'; 
+        t.style.transition='opacity 0.6s'; 
+        setTimeout(()=>t.remove(),700); 
+      },2000);
     }
     function playChime() {
       try {
         const ctx = new (window.AudioContext||window.webkitAudioContext)();
         [523.25,659.25,783.99,1046.5].forEach((f,i)=>{
           const o=ctx.createOscillator(), g=ctx.createGain();
-          o.frequency.value=f; g.gain.setValueAtTime(0.12,ctx.currentTime+i*0.1);
+          o.frequency.value=f; 
+          g.gain.setValueAtTime(0.12,ctx.currentTime+i*0.1);
           g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+i*0.1+1.3);
-          o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime+i*0.1+1.5);
+          o.connect(g); g.connect(ctx.destination); 
+          o.start(); 
+          o.stop(ctx.currentTime+i*0.1+1.5);
         });
       } catch(e){}
     }
-
     function buildSystemPrompt() {
-      const moodMap = { smart:'专业精准', strict:'严谨保守', creative:'富有想象力', warm:'热情温暖', concise:'简洁精炼', sassy:'犀利毒舌' };
+      const moodMap = { 
+        smart:'专业精准', 
+        strict:'严谨保守', 
+        creative:'富有想象力', 
+        warm:'热情温暖', 
+        concise:'简洁精炼', 
+        sassy:'犀利毒舌' 
+      };
       let p = settings.systemPrompt || `你是一个${moodMap[settings.moodMode]||'专业'}的AI助手。`;
       if (memorySummary) p += `\n[对话历史摘要]\n${memorySummary}\n[/摘要]`;
       p += '\n当前时间: ' + new Date().toLocaleString('zh-CN');
       return p;
     }
-
+    
     // 流式API
     async function streamChat(apiMsgs, onChunk, onDone, onErr, retry=0) {
-      const controller = new AbortController(); streamAbortController = controller;
+      const controller = new AbortController(); 
+      streamAbortController = controller;
       const body = {
-        model: TEXT_MODEL, messages: [{ role:'system', content: buildSystemPrompt() }, ...apiMsgs],
-        stream: true, temperature: settings.temperature, top_p: settings.topP,
-        min_p: settings.minP, frequency_penalty: settings.frequencyPenalty, max_tokens: 4096,
+        model: TEXT_MODEL, 
+        messages: [{ role:'system', content: buildSystemPrompt() }, ...apiMsgs],
+        stream: true, 
+        temperature: settings.temperature, 
+        top_p: settings.topP,
+        min_p: settings.minP, 
+        frequency_penalty: settings.frequencyPenalty, 
+        max_tokens: 4096,
       };
       if (settings.enableThinking) body.thinking_budget = settings.thinkingBudget;
       try {
-        const resp = await fetch(PROXY_URL, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal: controller.signal });
-        if (!resp.ok) throw new Error('API error '+resp.status);
-        const reader = resp.body.getReader(), decoder = new TextDecoder();
+        const resp = await fetch(getProxyUrl(), { 
+          method:'POST', 
+          headers:{'Content-Type':'application/json'}, 
+          body:JSON.stringify(body), 
+          signal: controller.signal 
+        });
+        
+        if (!resp.ok) {
+          let errMsg = `API错误: ${resp.status}`;
+          try {
+            const errData = await resp.json();
+            if (errData.error) errMsg = errData.error;
+          } catch(e) {}
+          throw new Error(errMsg);
+        }
+        
+        const reader = resp.body.getReader(), 
+              decoder = new TextDecoder();
         let buffer = '', full = '', usage = null;
+        
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, {stream:true});
-          const lines = buffer.split('\n'); buffer = lines.pop()||'';
+          const lines = buffer.split('\n'); 
+          buffer = lines.pop()||'';
+          
           for (const line of lines) {
-            const s = line.trim(); if (!s.startsWith('data:')) continue;
-            const d = s.slice(5).trim(); if (d==='[DONE]') continue;
+            const s = line.trim(); 
+            if (!s.startsWith('data:')) continue;
+            const d = s.slice(5).trim(); 
+            if (d==='[DONE]') continue;
+            
             try {
-              const p = JSON.parse(d); const delta = p?.choices?.[0]?.delta?.content;
-              if (delta) { full += delta; onChunk(full, delta); }
+              const p = JSON.parse(d); 
+              const delta = p?.choices?.[0]?.delta?.content;
+              if (delta) { 
+                full += delta; 
+                onChunk(full, delta); 
+              }
               if (p?.usage) usage = p.usage;
+            } catch(e){
+              console.warn('Parse stream error', e, line);
+            }
+          }
+        }
+        
+        // 处理剩余的 buffer
+        if (buffer.trim().startsWith('data:')) {
+          const d = buffer.trim().slice(5).trim();
+          if (d!=='[DONE]') {
+            try { 
+              const p=JSON.parse(d); 
+              if(p?.usage) usage=p.usage; 
             } catch(e){}
           }
         }
-        if (buffer.trim().startsWith('data:')) {
-          const d = buffer.trim().slice(5).trim();
-          if (d!=='[DONE]') try { const p=JSON.parse(d); if(p?.usage) usage=p.usage; } catch(e){}
-        }
+        
         onDone(full, usage);
       } catch(err) {
-        if (err.name==='AbortError') { onDone('', null, true); return; }
-        if (retry<1) { showToast('⚠️ 重试中...'); await new Promise(r=>setTimeout(r,1000)); return streamChat(apiMsgs,onChunk,onDone,onErr,retry+1); }
+        if (err.name==='AbortError') { 
+          onDone('', null, true); 
+          return; 
+        }
+        if (retry<1) { 
+          showToast('⚠️ 重试中...'); 
+          await new Promise(r=>setTimeout(r,1000)); 
+          return streamChat(apiMsgs,onChunk,onDone,onErr,retry+1); 
+        }
         onErr(err);
       }
     }
-
+    
     // 视觉模型
     async function callVision(imgBase64, instruction) {
-      const resp = await fetch(PROXY_URL, {
-        method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ model: VISION_MODEL, messages:[{ role:'user', content:[{type:'image_url',image_url:{url:imgBase64}},{type:'text',text:instruction}] }], stream:true, max_tokens:2048 }),
+      const resp = await fetch(getProxyUrl(), {
+        method:'POST', 
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ 
+          model: VISION_MODEL, 
+          messages:[{ 
+            role:'user', 
+            content:[
+              {type:'image_url',image_url:{url:imgBase64}},
+              {type:'text',text:instruction}
+            ] 
+          }], 
+          stream:true, 
+          max_tokens:2048 
+        }),
       });
-      if (!resp.ok) throw new Error('Vision error');
-      const reader = resp.body.getReader(), decoder = new TextDecoder();
+      if (!resp.ok) {
+        let errMsg = `视觉API错误: ${resp.status}`;
+        try {
+          const errData = await resp.json();
+          if (errData.error) errMsg = errData.error;
+        } catch(e) {}
+        throw new Error(errMsg);
+      }
+      const reader = resp.body.getReader(), 
+            decoder = new TextDecoder();
       let buf='', full='';
       while(true) {
-        const {done,value}=await reader.read(); if(done) break;
+        const {done,value}=await reader.read(); 
+        if(done) break;
         buf+=decoder.decode(value,{stream:true});
-        const lines=buf.split('\n'); buf=lines.pop()||'';
+        const lines=buf.split('\n'); 
+        buf=lines.pop()||'';
         for(const l of lines) {
-          const s=l.trim(); if(!s.startsWith('data:')) continue;
-          const d=s.slice(5).trim(); if(d==='[DONE]') continue;
-          try { const p=JSON.parse(d); const delta=p?.choices?.[0]?.delta?.content; if(delta) full+=delta; } catch(e){}
+          const s=l.trim(); 
+          if(!s.startsWith('data:')) continue;
+          const d=s.slice(5).trim(); 
+          if(d==='[DONE]') continue;
+          try { 
+            const p=JSON.parse(d); 
+            const delta=p?.choices?.[0]?.delta?.content; 
+            if(delta) full+=delta; 
+          } catch(e){
+            console.warn('Vision parse error', e);
+          }
         }
       }
       return full;
     }
-
+    
     async function sendMessage() {
       if (isStreaming) { stopStream(); return; }
       const text = msgInput.value.trim();
       const hasImg = !!pendingImageBase64;
       if (!text && !hasImg) return;
-      isStreaming = true; sendBtn.classList.add('stop-mode'); sendBtn.textContent='■';
-      msgInput.value = ''; msgInput.style.height = '42px';
+      
+      isStreaming = true; 
+      sendBtn.classList.add('stop-mode'); 
+      sendBtn.textContent='■';
+      msgInput.value = ''; 
+      msgInput.style.height = '42px';
+      
       let userContent = text || '请描述这张图片';
-      let img = pendingImageBase64; pendingImageBase64 = null; hideImagePreview();
+      let img = pendingImageBase64; 
+      pendingImageBase64 = null; 
+      hideImagePreview();
+      
       const userMsg = createMsg('user', userContent, hasImg?'image':'text', img);
       addMsg(userMsg);
-
+      
       if (hasImg && img) {
         let visionInstruction = userContent;
         try {
           const opt = await callTextSync(`用户上传图片并提问："${userContent}"，生成精准识图指令（只输出指令）。`);
           if (opt) visionInstruction = opt.trim();
-        } catch(e){}
+        } catch(e) {
+          console.warn('生成识图指令失败，使用默认指令', e);
+          visionInstruction = userContent;
+        }
+        
         const aiMsg = createMsg('assistant', '🔍 正在识别图片...');
-        messages.push(aiMsg); appendMsg(aiMsg, true);
+        messages.push(aiMsg); 
+        appendMsg(aiMsg, true);
         currentStreamMsgId = aiMsg.id;
+        
         let visionResult = '';
-        try { visionResult = await callVision(img, visionInstruction); } catch(e) {
+        try { 
+          visionResult = await callVision(img, visionInstruction); 
+        } catch(e) {
           aiMsg.content = '⚠️ 识别失败：'+e.message;
           updateMsgContent(aiMsg.id, aiMsg.content);
-          removeCursor(aiMsg.id); currentStreamMsgId=null;
-          finishSend(); return;
+          removeCursor(aiMsg.id); 
+          currentStreamMsgId=null;
+          finishSend(); 
+          return;
         }
+        
         userMsg.imageRecognized = true;
         const ur = document.querySelector(`[data-msg-id="${userMsg.id}"]`);
-        if (ur) { const imgEl = ur.querySelector('.msg-image-thumb'); if(imgEl) { imgEl.classList.add('recognized'); if(!imgEl.parentElement.querySelector('.img-badge-eye')) { const b=document.createElement('span'); b.className='img-badge-eye'; b.textContent='👁'; imgEl.parentElement.appendChild(b); } } }
+        if (ur) { 
+          const imgEl = ur.querySelector('.msg-image-thumb'); 
+          if(imgEl) { 
+            imgEl.classList.add('recognized'); 
+            if(!imgEl.parentElement.querySelector('.img-badge-eye')) { 
+              const b=document.createElement('span'); 
+              b.className='img-badge-eye'; 
+              b.textContent='👁'; 
+              imgEl.parentElement.appendChild(b); 
+            } 
+          } 
+        }
+        
         aiMsg.content = '';
         updateMsgContent(aiMsg.id, '');
+        
         const ctx = `[识别结果]\n${visionResult}\n[/结果]\n用户问题：${userContent}\n请回答。`;
-        const apiMsgs = buildApiMsgs(); apiMsgs.push({role:'user',content:ctx});
+        const apiMsgs = buildApiMsgs(); 
+        apiMsgs.push({role:'user',content:ctx});
+        
         await streamChat(apiMsgs,
-          (full)=>{ aiMsg.content=full; updateMsgContent(aiMsg.id, full); },
+          (full)=>{ 
+            aiMsg.content=full; 
+            updateMsgContent(aiMsg.id, full); 
+          },
           (full,usage,aborted)=>{
-            removeCursor(aiMsg.id); currentStreamMsgId=null;
+            removeCursor(aiMsg.id); 
+            currentStreamMsgId=null;
             if(aborted && !aiMsg.content) aiMsg.content='(已停止)';
             aiMsg.content = aiMsg.content || full || '(无响应)';
-            if(usage?.total_tokens) { aiMsg.tokens=usage.total_tokens; totalTokens+=usage.total_tokens; }
+            if(usage?.total_tokens) { 
+              aiMsg.tokens=usage.total_tokens; 
+              totalTokens+=usage.total_tokens; 
+            }
             updateMsgContent(aiMsg.id, aiMsg.content);
             finishSend();
           },
-          (err)=>{ removeCursor(aiMsg.id); currentStreamMsgId=null; aiMsg.content='⚠️ '+err.message; updateMsgContent(aiMsg.id,aiMsg.content); finishSend(); }
+          (err)=>{ 
+            removeCursor(aiMsg.id); 
+            currentStreamMsgId=null; 
+            aiMsg.content='⚠️ '+err.message; 
+            updateMsgContent(aiMsg.id,aiMsg.content); 
+            finishSend(); 
+          }
         );
       } else {
         const aiMsg = createMsg('assistant', '');
-        messages.push(aiMsg); appendMsg(aiMsg, true);
+        messages.push(aiMsg); 
+        appendMsg(aiMsg, true);
         currentStreamMsgId = aiMsg.id;
+        
         await streamChat(buildApiMsgs(),
-          (full)=>{ aiMsg.content=full; updateMsgContent(aiMsg.id, full); },
+          (full)=>{ 
+            aiMsg.content=full; 
+            updateMsgContent(aiMsg.id, full); 
+          },
           (full,usage,aborted)=>{
-            removeCursor(aiMsg.id); currentStreamMsgId=null;
+            removeCursor(aiMsg.id); 
+            currentStreamMsgId=null;
             if(aborted && !aiMsg.content) aiMsg.content='(已停止)';
             aiMsg.content = aiMsg.content || full || '(无响应)';
-            if(usage?.total_tokens) { aiMsg.tokens=usage.total_tokens; totalTokens+=usage.total_tokens; }
+            if(usage?.total_tokens) { 
+              aiMsg.tokens=usage.total_tokens; 
+              totalTokens+=usage.total_tokens; 
+            }
             updateMsgContent(aiMsg.id, aiMsg.content);
             finishSend();
           },
-          (err)=>{ removeCursor(aiMsg.id); currentStreamMsgId=null; aiMsg.content='⚠️ '+err.message; updateMsgContent(aiMsg.id,aiMsg.content); finishSend(); }
+          (err)=>{ 
+            removeCursor(aiMsg.id); 
+            currentStreamMsgId=null; 
+            aiMsg.content='⚠️ '+err.message; 
+            updateMsgContent(aiMsg.id,aiMsg.content); 
+            finishSend(); 
+          }
         );
       }
     }
+    
     function finishSend() {
-      isStreaming = false; sendBtn.classList.remove('stop-mode'); sendBtn.textContent='➤';
-      streamAbortController = null; saveStorage();
+      isStreaming = false; 
+      sendBtn.classList.remove('stop-mode'); 
+      sendBtn.textContent='➤';
+      streamAbortController = null; 
+      saveStorage();
       tokenIndicator.textContent = 'Tokens: ' + totalTokens.toLocaleString();
       checkMemory();
+      testConnection();
     }
+    
     function stopStream() {
-      if (streamAbortController) { streamAbortController.abort(); streamAbortController = null; }
-      isStreaming = false; sendBtn.classList.remove('stop-mode'); sendBtn.textContent='➤';
+      if (streamAbortController) { 
+        streamAbortController.abort(); 
+        streamAbortController = null; 
+      }
+      isStreaming = false; 
+      sendBtn.classList.remove('stop-mode'); 
+      sendBtn.textContent='➤';
       if (currentStreamMsgId) {
         removeCursor(currentStreamMsgId);
         const m = messages.find(x=>x.id===currentStreamMsgId);
-        if (m && !m.content) { m.content='(已停止)'; updateMsgContent(currentStreamMsgId, m.content); }
+        if (m && !m.content) { 
+          m.content='(已停止)'; 
+          updateMsgContent(currentStreamMsgId, m.content); 
+        }
         currentStreamMsgId = null;
       }
-      saveStorage(); showToast('⏹ 已停止');
+      saveStorage(); 
+      showToast('⏹ 已停止');
     }
+    
     function buildApiMsgs() {
       return messages.slice(-30).filter(m=>m.role!=='system').map(m=>({role:m.role, content:m.content}));
     }
+    
     function removeCursor(id) {
       const row = document.querySelector(`[data-msg-id="${id}"]`);
-      if (row) { const b=row.querySelector('.msg-bubble'); if(b) { b.classList.remove('streaming'); const c=b.querySelector('.cursor-blink'); if(c) c.remove(); } }
+      if (row) { 
+        const b=row.querySelector('.msg-bubble'); 
+        if(b) { 
+          b.classList.remove('streaming'); 
+          const c=b.querySelector('.cursor-blink'); 
+          if(c) c.remove(); 
+        } 
+      }
     }
-
-    // 图片处理
+    
+    // 图片处理 - 优化压缩尺寸到512px
     function compressImage(file) {
       return new Promise((res,rej)=>{
         const reader = new FileReader();
         reader.onload = e => {
-          const img = new Image(); img.onload = () => {
+          const img = new Image(); 
+          img.onload = () => {
             const canvas = document.createElement('canvas');
-            let {width,height}=img; const max=200;
-            if (width>max||height>max) { if(width>height){ height=Math.round(height*max/width); width=max; } else { width=Math.round(width*max/height); height=max; } }
-            canvas.width=width; canvas.height=height;
+            let {width,height}=img; 
+            const max=512; // 从200提升到512，保留更多细节
+            if (width>max||height>max) { 
+              if(width>height){ 
+                height=Math.round(height*max/width); 
+                width=max; 
+              } else { 
+                width=Math.round(width*max/height); 
+                height=max; 
+              } 
+            }
+            canvas.width=width; 
+            canvas.height=height;
             canvas.getContext('2d').drawImage(img,0,0,width,height);
-            res(canvas.toDataURL('image/jpeg',0.7));
-          }; img.src=e.target.result;
-        }; reader.onerror=rej; reader.readAsDataURL(file);
+            res(canvas.toDataURL('image/jpeg',0.85)); // 提高质量
+          }; 
+          img.onerror=rej;
+          img.src=e.target.result;
+        }; 
+        reader.onerror=rej; 
+        reader.readAsDataURL(file);
       });
     }
+    
     function handleImageUpload(file) {
       if (!file || !file.type.startsWith('image/')) return showToast('⚠️ 请选择图片');
-      compressImage(file).then(b64=>{ pendingImageBase64=b64; imagePreviewMini.src=b64; imagePreviewMini.classList.add('show'); uploadBtn.classList.add('has-image'); showToast('📷 图片已就绪'); }).catch(()=>showToast('⚠️ 处理失败'));
+      compressImage(file).then(b64=>{ 
+        pendingImageBase64=b64; 
+        imagePreviewMini.src=b64; 
+        imagePreviewMini.classList.add('show'); 
+        uploadBtn.classList.add('has-image'); 
+        showToast('📷 图片已就绪'); 
+      }).catch(()=>showToast('⚠️ 处理失败'));
     }
-    function hideImagePreview() { pendingImageBase64=null; imagePreviewMini.classList.remove('show'); imagePreviewMini.src=''; uploadBtn.classList.remove('has-image'); }
-    function viewImage(id) { const m=messages.find(x=>x.id===id); if(m&&m.imageBase64) { const w=window.open('','_blank','width=600,height=500'); if(w) w.document.write(`<img src="${m.imageBase64}" style="max-width:100%;">`); } }
-
+    
+    function hideImagePreview() { 
+      pendingImageBase64=null; 
+      imagePreviewMini.classList.remove('show'); 
+      imagePreviewMini.src=''; 
+      uploadBtn.classList.remove('has-image'); 
+    }
+    
+    function viewImage(id) { 
+      const m=messages.find(x=>x.id===id); 
+      if(m&&m.imageBase64) { 
+        const w=window.open('','_blank','width=800,height=600'); 
+        if(w) w.document.write(`<img src="${m.imageBase64}" style="max-width:100%;">`); 
+      } 
+    }
+    
+    // 复制功能
+    function copyMsg(id) {
+      const m = messages.find(x=>x.id===id);
+      if(m) {
+        navigator.clipboard.writeText(m.content);
+        showToast('📋 已复制');
+      }
+    }
+    function copyCode(btn) {
+      const code = btn.parentElement.querySelector('pre').textContent;
+      navigator.clipboard.writeText(code);
+      showToast('📋 代码已复制');
+    }
+    
     // 事件绑定
     sendBtn.addEventListener('click', sendMessage);
-    msgInput.addEventListener('keydown', e => { if (e.key==='Enter'&&!e.shiftKey) { e.preventDefault(); sendMessage(); } });
-    msgInput.addEventListener('input', ()=>{ msgInput.style.height='42px'; msgInput.style.height=Math.min(msgInput.scrollHeight,120)+'px'; });
+    msgInput.addEventListener('keydown', e => { 
+      if (e.key==='Enter'&&!e.shiftKey) { 
+        e.preventDefault(); 
+        sendMessage(); 
+      } 
+    });
+    msgInput.addEventListener('input', ()=>{ 
+      msgInput.style.height='42px'; 
+      msgInput.style.height=Math.min(msgInput.scrollHeight,120)+'px'; 
+    });
+    
     uploadBtn.addEventListener('click', ()=>{
-      if (pendingImageBase64) { hideImagePreview(); showToast('📷 已移除'); return; }
-      const inp = document.createElement('input'); inp.type='file'; inp.accept='image/*';
-      inp.onchange = () => { if(inp.files?.[0]) handleImageUpload(inp.files[0]); }; inp.click();
+      if (pendingImageBase64) { 
+        hideImagePreview(); 
+        showToast('📷 已移除'); 
+        return; 
+      }
+      const inp = document.createElement('input'); 
+      inp.type='file'; 
+      inp.accept='image/*';
+      inp.onchange = () => { 
+        if(inp.files?.[0]) handleImageUpload(inp.files[0]); 
+      }; 
+      inp.click();
     });
-    imagePreviewMini.addEventListener('click', ()=>{ hideImagePreview(); showToast('📷 已移除'); });
+    
+    imagePreviewMini.addEventListener('click', ()=>{ 
+      hideImagePreview(); 
+      showToast('📷 已移除'); 
+    });
+    
     document.addEventListener('paste', e => {
-      const items = e.clipboardData?.items; if (items) for (const item of items) if (item.type.startsWith('image/')) { e.preventDefault(); handleImageUpload(item.getAsFile()); return; }
+      const items = e.clipboardData?.items; 
+      if (items) {
+        for (const item of items) {
+          if (item.type.startsWith('image/')) { 
+            e.preventDefault(); 
+            handleImageUpload(item.getAsFile()); 
+            return; 
+          }
+        }
+      }
     });
+    
     document.addEventListener('dragover', e => { e.preventDefault(); });
-    document.addEventListener('drop', e => { e.preventDefault(); const f=e.dataTransfer?.files?.[0]; if(f?.type.startsWith('image/')) handleImageUpload(f); });
-
+    document.addEventListener('drop', e => { 
+      e.preventDefault(); 
+      const f=e.dataTransfer?.files?.[0]; 
+      if(f?.type.startsWith('image/')) handleImageUpload(f); 
+    });
+    
     // 模式切换
     document.querySelectorAll('.mode-btn').forEach(b=>b.addEventListener('click',()=>{
-      document.querySelectorAll('.mode-btn').forEach(x=>x.classList.remove('active')); b.classList.add('active');
+      document.querySelectorAll('.mode-btn').forEach(x=>x.classList.remove('active')); 
+      b.classList.add('active');
       currentMode = b.dataset.mode;
       settings.enableThinking = currentMode === 'expert';
       chipDeepThink.classList.toggle('active', settings.enableThinking);
       saveStorage();
       showToast(currentMode==='fast'?'🚀 快速模式':'🧠 专家模式');
     }));
-    chipDeepThink.addEventListener('click', ()=>{ settings.enableThinking=!settings.enableThinking; chipDeepThink.classList.toggle('active',settings.enableThinking); saveStorage(); });
-    chipSearch.addEventListener('click', ()=>{ chipSearch.classList.toggle('active'); showToast(chipSearch.classList.contains('active')?'🔍 已开启':'🔍 已关闭'); });
-
-    chatContainer.addEventListener('scroll', ()=>{ const near=chatContainer.scrollHeight-chatContainer.scrollTop-chatContainer.clientHeight<150; scrollBottomBtn.classList.toggle('visible',!near); });
+    
+    chipDeepThink.addEventListener('click', ()=>{ 
+      settings.enableThinking=!settings.enableThinking; 
+      chipDeepThink.classList.toggle('active',settings.enableThinking); 
+      saveStorage(); 
+    });
+    
+    chipSearch.addEventListener('click', ()=>{ 
+      chipSearch.classList.toggle('active'); 
+      showToast(chipSearch.classList.contains('active')?'🔍 已开启':'🔍 已关闭'); 
+    });
+    
+    chatContainer.addEventListener('scroll', ()=>{ 
+      const near=chatContainer.scrollHeight-chatContainer.scrollTop-chatContainer.clientHeight<150; 
+      scrollBottomBtn.classList.toggle('visible',!near); 
+    });
+    
     scrollBottomBtn.addEventListener('click', ()=>scrollToBottom(true));
-
+    
     // 设置面板
+    function openSettings() { 
+      settingsOverlay.classList.add('active'); 
+      settingsPanel.classList.add('active'); 
+      document.body.style.overflow='hidden'; 
+      renderTab('tab-common'); 
+      document.querySelector('.settings-tab[data-stab="tab-common"]').classList.add('active'); 
+    }
+    
+    function closeSettingsPanel() { 
+      settingsOverlay.classList.remove('active'); 
+      settingsPanel.classList.remove('active'); 
+      document.body.style.overflow=''; 
+      applyUI(); 
+      saveStorage(); 
+    }
+    
+    settingsOverlay.addEventListener('click', closeSettingsPanel);
     btnSettings.addEventListener('click', openSettings);
     closeSettings.addEventListener('click', closeSettingsPanel);
-    settingsOverlay.addEventListener('click', closeSettingsPanel);
-    function openSettings() { settingsOverlay.classList.add('active'); settingsPanel.classList.add('active'); document.body.style.overflow='hidden'; renderTab('tab-common'); document.querySelector('.settings-tab[data-stab="tab-common"]').classList.add('active'); }
-    function closeSettingsPanel() { settingsOverlay.classList.remove('active'); settingsPanel.classList.remove('active'); document.body.style.overflow=''; applyUI(); saveStorage(); }
-    document.querySelectorAll('.settings-tab').forEach(t=>t.addEventListener('click',()=>{ document.querySelectorAll('.settings-tab').forEach(x=>x.classList.remove('active')); t.classList.add('active'); renderTab(t.dataset.stab); }));
-
+    
+    document.querySelectorAll('.settings-tab').forEach(t=>t.addEventListener('click',()=>{ 
+      document.querySelectorAll('.settings-tab').forEach(x=>x.classList.remove('active')); 
+      t.classList.add('active'); 
+      renderTab(t.dataset.stab); 
+    }));
+    
     function renderTab(id) {
       if (id==='tab-common') {
         settingsBody.innerHTML = `
-          <div class="setting-group"><label>助理名称</label><input type="text" id="setName" value="${escapeHtml(settings.assistantName||'')}"></div>
-          <div class="setting-group"><label>心情模式</label><select id="setMood">${['smart','strict','creative','warm','concise','sassy'].map(m=>`<option value="${m}" ${settings.moodMode===m?'selected':''}>${({smart:'🧠 智能',strict:'🔒 严谨',creative:'🎨 创意',warm:'💛 热情',concise:'✂️ 简洁',sassy:'🌶️ 毒舌'})[m]}</option>`).join('')}</select></div>
-          <div class="setting-group"><label>系统提示词</label><textarea id="setSysPrompt">${escapeHtml(settings.systemPrompt||'')}</textarea></div>
-          <div class="setting-group"><div class="toggle-row"><span>提示音效</span><div class="toggle-switch ${settings.soundEnabled?'on':''}" id="toggleSound" onclick="toggleSound()"></div></div></div>
+          <div class="setting-group">
+            <label>助理名称</label>
+            <input type="text" id="setName" value="${escapeHtml(settings.assistantName||'')}">
+          </div>
+          <div class="setting-group">
+            <label>心情模式</label>
+            <select id="setMood">
+              ${['smart','strict','creative','warm','concise','sassy'].map(m=>
+                `<option value="${m}" ${settings.moodMode===m?'selected':''}>
+                  ${({smart:'🧠 智能',strict:'🔒 严谨',creative:'🎨 创意',warm:'💛 热情',concise:'✂️ 简洁',sassy:'🌶️ 毒舌'})[m]}
+                </option>`
+              ).join('')}
+            </select>
+          </div>
+          <div class="setting-group">
+            <label>系统提示词</label>
+            <textarea id="setSysPrompt">${escapeHtml(settings.systemPrompt||'')}</textarea>
+          </div>
+          <div class="setting-group">
+            <div class="toggle-row">
+              <span>提示音效</span>
+              <div class="toggle-switch ${settings.soundEnabled?'on':''}" id="toggleSound" onclick="toggleSound()"></div>
+            </div>
+          </div>
           <button class="btn-sm primary" onclick="saveCommon()">💾 保存</button>`;
       } else if (id==='tab-expert') {
         settingsBody.innerHTML = `
-          <div><label>Temperature</label><div class="range-row"><input type="range" id="setTemp" min="0" max="2" step="0.01" value="${settings.temperature}"><span class="range-val" id="setTempVal">${settings.temperature.toFixed(2)}</span></div></div>
-          <div><label>Top-P</label><div class="range-row"><input type="range" id="setTopP" min="0" max="1" step="0.01" value="${settings.topP}"><span class="range-val" id="setTopPVal">${settings.topP.toFixed(2)}</span></div></div>
-          <div><label>MinP</label><div class="range-row"><input type="range" id="setMinP" min="0" max="1" step="0.01" value="${settings.minP}"><span class="range-val" id="setMinPVal">${settings.minP.toFixed(2)}</span></div></div>
-          <div><label>Frequency Penalty</label><div class="range-row"><input type="range" id="setFreqPen" min="0" max="2" step="0.01" value="${settings.frequencyPenalty}"><span class="range-val" id="setFreqPenVal">${settings.frequencyPenalty.toFixed(2)}</span></div></div>
-          <div><div class="toggle-row"><label>Enable Thinking</label><div class="toggle-switch ${settings.enableThinking?'on':''}" id="toggleThink" onclick="toggleThink()"></div></div></div>
-          <div id="thinkBudgetGroup" style="${settings.enableThinking?'':'display:none;'}"><label>Thinking Budget</label><div class="range-row"><input type="range" id="setThinkBudget" min="128" max="4096" step="128" value="${settings.thinkingBudget}"><span class="range-val" id="setThinkBudgetVal">${settings.thinkingBudget}</span></div></div>
+          <div>
+            <label>Temperature</label>
+            <div class="range-row">
+              <input type="range" id="setTemp" min="0" max="2" step="0.01" value="${settings.temperature}">
+              <span class="range-val" id="setTempVal">${settings.temperature.toFixed(2)}</span>
+            </div>
+          </div>
+          <div>
+            <label>Top-P</label>
+            <div class="range-row">
+              <input type="range" id="setTopP" min="0" max="1" step="0.01" value="${settings.topP}">
+              <span class="range-val" id="setTopPVal">${settings.topP.toFixed(2)}</span>
+            </div>
+          </div>
+          <div>
+            <label>MinP</label>
+            <div class="range-row">
+              <input type="range" id="setMinP" min="0" max="1" step="0.01" value="${settings.minP}">
+              <span class="range-val" id="setMinPVal">${settings.minP.toFixed(2)}</span>
+            </div>
+          </div>
+          <div>
+            <label>Frequency Penalty</label>
+            <div class="range-row">
+              <input type="range" id="setFreqPen" min="0" max="2" step="0.01" value="${settings.frequencyPenalty}">
+              <span class="range-val" id="setFreqPenVal">${settings.frequencyPenalty.toFixed(2)}</span>
+            </div>
+          </div>
+          <div>
+            <div class="toggle-row">
+              <label>Enable Thinking</label>
+              <div class="toggle-switch ${settings.enableThinking?'on':''}" id="toggleThink" onclick="toggleThink()"></div>
+            </div>
+          </div>
+          <div id="thinkBudgetGroup" style="${settings.enableThinking?'':'display:none;'}">
+            <label>Thinking Budget</label>
+            <div class="range-row">
+              <input type="range" id="setThinkBudget" min="128" max="4096" step="128" value="${settings.thinkingBudget}">
+              <span class="range-val" id="setThinkBudgetVal">${settings.thinkingBudget}</span>
+            </div>
+          </div>
           <button class="btn-sm primary" onclick="saveExpert()">💾 保存</button>`;
         setTimeout(()=>{
           bindRange('setTemp','setTempVal',v=>parseFloat(v).toFixed(2));
@@ -896,26 +1327,54 @@
           bindRange('setFreqPen','setFreqPenVal',v=>parseFloat(v).toFixed(2));
           bindRange('setThinkBudget','setThinkBudgetVal',v=>parseInt(v));
         },50);
+      } else if (id==='tab-server') {
+        settingsBody.innerHTML = `
+          <div class="setting-group">
+            <label>代理地址 (Worker URL)</label>
+            <input type="text" id="setProxyUrl" value="${escapeHtml(settings.proxyUrl||'')}">
+            <p class="setting-hint">你的 Cloudflare Worker 部署地址，例如：https://xxx.yyy.workers.dev/</p>
+          </div>
+          <button class="btn-sm primary" onclick="saveServer()">💾 保存</button>
+          <button class="btn-sm" onclick="testConnection(); showToast('🔄 正在检测连接...')">🔄 检测连接</button>
+        `;
       } else {
         settingsBody.innerHTML = `
           <p>管理对话数据和存储</p>
           <div class="btn-row">
-            <button class="btn-sm" onclick="resetSettings()">🔄 恢复默认设置</button>
-            <button class="btn-sm danger" onclick="clearChat()">🗑 清除对话</button>
-            <button class="btn-sm" onclick="exportChat()">📥 导出对话</button>
-            <button class="btn-sm danger" onclick="fullReset()">⚠️ 完全重置</button>
-          </div>
-          <p style="font-size:11px;">消息:${messages.length} | 记忆:${memorySummary?memorySummary.length+'字':'无'}<br>Token累计:${totalTokens}</p>`;
+            <button class="btn-sm danger" onclick="clearAllData()">🗑️ 清空所有对话</button>
+            <button class="btn-sm" onclick="exportData()">📥 导出数据</button>
+          </div>`;
       }
     }
-    function bindRange(id, valId, fmt) {
-      document.getElementById(id).addEventListener('input', () => { document.getElementById(valId).textContent = fmt(document.getElementById(id).value); });
+    
+    function bindRange(inputId, valId, formatter) {
+      const input = document.getElementById(inputId);
+      const val = document.getElementById(valId);
+      if(input && val) {
+        input.addEventListener('input', ()=>{
+          val.textContent = formatter(input.value);
+        });
+      }
     }
+    
+    function toggleSound() {
+      settings.soundEnabled = !settings.soundEnabled;
+      document.getElementById('toggleSound').classList.toggle('on', settings.soundEnabled);
+    }
+    function toggleThink() {
+      settings.enableThinking = !settings.enableThinking;
+      document.getElementById('toggleThink').classList.toggle('on', settings.enableThinking);
+      document.getElementById('thinkBudgetGroup').style.display = settings.enableThinking ? 'block' : 'none';
+    }
+    
     function saveCommon() {
-      settings.assistantName = document.getElementById('setName').value.trim()||'AI助理';
+      settings.assistantName = document.getElementById('setName').value;
       settings.moodMode = document.getElementById('setMood').value;
-      settings.systemPrompt = document.getElementById('setSysPrompt').value.trim();
-      saveStorage(); applyUI(); showToast('✅ 已保存');
+      settings.systemPrompt = document.getElementById('setSysPrompt').value;
+      saveStorage();
+      applyUI();
+      closeSettingsPanel();
+      showToast('✅ 设置已保存');
     }
     function saveExpert() {
       settings.temperature = parseFloat(document.getElementById('setTemp').value);
@@ -923,54 +1382,77 @@
       settings.minP = parseFloat(document.getElementById('setMinP').value);
       settings.frequencyPenalty = parseFloat(document.getElementById('setFreqPen').value);
       settings.thinkingBudget = parseInt(document.getElementById('setThinkBudget').value);
-      saveStorage(); showToast('✅ 专家参数已保存');
-    }
-    function toggleThink() {
-      const t=document.getElementById('toggleThink'); t.classList.toggle('on');
-      settings.enableThinking = t.classList.contains('on');
-      document.getElementById('thinkBudgetGroup').style.display = settings.enableThinking?'block':'none';
-      chipDeepThink.classList.toggle('active', settings.enableThinking);
       saveStorage();
+      closeSettingsPanel();
+      showToast('✅ 参数已保存');
     }
-    function toggleSound() { const t=document.getElementById('toggleSound'); t.classList.toggle('on'); settings.soundEnabled=t.classList.contains('on'); saveStorage(); }
-    function resetSettings() {
-      settings = { assistantName:'AI助理', moodMode:'smart', systemPrompt:'', temperature:0.8, topP:0.9, minP:0, frequencyPenalty:0, enableThinking:true, thinkingBudget:2048, soundEnabled:true };
-      saveStorage(); applyUI(); renderTab('tab-common');
-      document.querySelectorAll('.settings-tab').forEach(t=>t.classList.remove('active'));
-      document.querySelector('.settings-tab[data-stab="tab-common"]').classList.add('active');
-      showToast('✅ 已恢复默认');
+    function saveServer() {
+      settings.proxyUrl = document.getElementById('setProxyUrl').value.trim();
+      saveStorage();
+      applyUI();
+      closeSettingsPanel();
+      showToast('✅ 服务配置已保存');
     }
-    function clearChat() { showConfirm('确定清除当前对话？',()=>{ messages=[]; totalTokens=0; saveStorage(); chatContainer.innerHTML=''; tokenIndicator.textContent='Tokens:0'; showToast('🗑 已清除'); }); }
-    function exportChat() {
-      const txt = messages.map(m=>`[${new Date(m.timestamp).toLocaleString()}] ${m.role==='user'?'用户':'AI'}: ${m.content||'[图片]'}`).join('\n\n');
-      const b=new Blob([txt],{type:'text/plain'}); const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download='chat.txt'; a.click(); showToast('📥 已导出');
+    
+    function clearAllData() {
+      confirm('确定要清空所有对话数据吗？此操作不可恢复。', ()=>{
+        messages = [];
+        memorySummary = '';
+        totalTokens = 0;
+        saveStorage();
+        renderAll();
+        showToast('✅ 数据已清空');
+        closeSettingsPanel();
+      });
     }
-    function fullReset() { showConfirm('完全重置所有数据？',()=>{ localStorage.clear(); location.reload(); }); }
-
-    function showConfirm(text, cb) { confirmText.textContent=text; confirmCallback=cb; confirmOverlay.classList.add('active'); }
-    confirmYes.addEventListener('click',()=>{ confirmOverlay.classList.remove('active'); if(confirmCallback) confirmCallback(); confirmCallback=null; });
-    confirmNo.addEventListener('click',()=>{ confirmOverlay.classList.remove('active'); confirmCallback=null; });
-    confirmOverlay.addEventListener('click',e=>{ if(e.target===confirmOverlay){ confirmOverlay.classList.remove('active'); confirmCallback=null; } });
-
-    function showToast(msg) { globalToast.textContent=msg; globalToast.classList.add('show'); clearTimeout(globalToast._t); globalToast._t=setTimeout(()=>globalToast.classList.remove('show'),2200); }
-    function copyMsg(id) { const m=messages.find(x=>x.id===id); if(m?.content) navigator.clipboard.writeText(m.content).then(()=>showToast('📋 已复制')).catch(()=>showToast('⚠️ 失败')); }
-    function copyCode(btn) { const pre=btn.parentElement.querySelector('pre'); if(pre) navigator.clipboard.writeText(pre.textContent).then(()=>{ btn.textContent='✅'; setTimeout(()=>btn.textContent='📋 复制代码',1500); }); }
-
-    window.copyMsg = copyMsg; window.copyCode = copyCode; window.viewImage = viewImage;
-    window.saveCommon = saveCommon; window.saveExpert = saveExpert;
-    window.resetSettings = resetSettings; window.clearChat = clearChat;
-    window.exportChat = exportChat; window.fullReset = fullReset;
-    window.toggleThink = toggleThink; window.toggleSound = toggleSound;
-
-    document.addEventListener('keydown', e => { if(e.key==='Escape'){ if(settingsPanel.classList.contains('active')) closeSettingsPanel(); else if(isStreaming) stopStream(); } });
-
-    renderAll();
-    if (messages.length===0) {
-      const wm = createMsg('assistant','👋 你好！我是AI助理。\n请确保 Cloudflare Worker 已配置环境变量 API_KEY。');
-      messages.push(wm); appendMsg(wm, false);
+    function exportData() {
+      const data = {
+        messages, memorySummary, totalTokens, settings,
+        exportTime: new Date().toISOString()
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type: 'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'ai_assistant_backup.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('✅ 数据已导出');
     }
-    saveStorage();
-    console.log('🚀 硅基流动·千问 已就绪 | 代理:', PROXY_URL);
+    
+    function confirm(text, cb) {
+      confirmText.textContent = text;
+      confirmCallback = cb;
+      confirmOverlay.classList.add('active');
+    }
+    confirmYes.addEventListener('click', ()=>{
+      confirmOverlay.classList.remove('active');
+      if(confirmCallback) confirmCallback();
+      confirmCallback = null;
+    });
+    confirmNo.addEventListener('click', ()=>{
+      confirmOverlay.classList.remove('active');
+      confirmCallback = null;
+    });
+    
+    function showToast(text) {
+      globalToast.textContent = text;
+      globalToast.classList.add('show');
+      setTimeout(()=>globalToast.classList.remove('show'), 2500);
+    }
+    
+    // 暴露全局函数给内联事件使用
+    window.copyMsg = copyMsg;
+    window.copyCode = copyCode;
+    window.viewImage = viewImage;
+    window.toggleSound = toggleSound;
+    window.toggleThink = toggleThink;
+    window.saveCommon = saveCommon;
+    window.saveExpert = saveExpert;
+    window.saveServer = saveServer;
+    window.clearAllData = clearAllData;
+    window.exportData = exportData;
+    window.testConnection = testConnection;
   </script>
 </body>
 </html>
